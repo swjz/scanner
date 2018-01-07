@@ -14,6 +14,10 @@ movie_name = os.path.splitext(os.path.basename(movie_path))[0]
 
 
 with Database() as db:
+    [input_table], failed = db.ingest_videos([('example', movie_path)], force=True)
+
+    print(db.summarize())
+
     db.register_op('ObjDetect', [('frame', ColumnType.Video)], ['out_frame'])
     kernel_path = script_dir + '/obj_detect_kernel.py'
     db.register_python_kernel('ObjDetect', DeviceType.CPU, kernel_path)
