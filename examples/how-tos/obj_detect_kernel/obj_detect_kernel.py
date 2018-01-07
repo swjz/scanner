@@ -19,7 +19,7 @@ DOWNLOAD_BASE = 'http://download.tensorflow.org/models/object_detection/'
 # List of the strings that is used to add correct label for each box.
 PATH_TO_LABELS = os.path.join(PATH_TO_REPO, 'data', 'mscoco_label_map.pbtxt')
 
-PATH_TO_GRAPH = os.path.join(PATH_TO_REPO, 'ssd_mobilenet_v1_coco_11_06_2017', 'frozen_inference_graph.pb')
+PATH_TO_GRAPH = os.path.join(PATH_TO_REPO, 'ssd_mobilenet_v1_coco_2017_11_17', 'frozen_inference_graph.pb')
 
 NUM_CLASSES = 90
 
@@ -45,17 +45,18 @@ class ObjDetectKernel(pykernel.TensorFlowKernel):
         boxes = self.graph.get_tensor_by_name('detection_boxes:0')
         scores = self.graph.get_tensor_by_name('detection_scores:0')
         classes = self.graph.get_tensor_by_name('detection_classes:0')
-        (boxes, scores, classes) = self.sess.run(
-            [boxes, scores, classes],
-            feed_dict={image_tensor: np.expand_dims(image, axis=0)})
-        vis_util.visualize_boxes_and_labels_on_image_array(
-            image,
-            np.squeeze(boxes),
-            np.squeeze(classes).astype(np.int32),
-            np.squeeze(scores),
-            category_index,
-            use_normalized_coordinates=True,
-            line_thickness=8)
-        return [image.tobytes()]
+        with self.graph.as_default():
+            (boxes, scores, classes) = self.sess.run(
+                [boxes, scores, classes],
+                feed_dict={image_tensor: np.expand_dims(image, axis=0)})
+            vis_util.visualize_boxes_and_labels_on_image_array(
+                image,
+                np.squeeze(boxes),
+                np.squeeze(classes).astype(np.int32),
+                np.squeeze(scores),
+                category_index,
+                use_normalized_coordinates=True,
+                line_thickness=8)
+            return [image.tobytes()]
 
 KERNEL = ObjDetectKernel
