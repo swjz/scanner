@@ -39,7 +39,6 @@ class ObjDetectKernel(pykernel.TensorFlowKernel):
         return dnn
 
     def execute(self, cols):
-        print 'Execute'
         image = cols[0]
         image_tensor = self.graph.get_tensor_by_name('image_tensor:0')
         boxes = self.graph.get_tensor_by_name('detection_boxes:0')
