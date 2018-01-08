@@ -56,6 +56,6 @@ class ObjDetectKernel(pykernel.TensorFlowKernel):
                 category_index,
                 use_normalized_coordinates=True,
                 line_thickness=8)
-            return [image.tobytes()]
+            return [image]
 
 KERNEL = ObjDetectKernel

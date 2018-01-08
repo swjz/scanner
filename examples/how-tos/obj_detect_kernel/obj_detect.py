@@ -18,20 +18,32 @@ with Database() as db:
 
     print(db.summarize())
 
-    db.register_op('ObjDetect', [('frame', ColumnType.Video)], ['out_frame'])
+    db.register_op('ObjDetect', [('frame', ColumnType.Video)], [('frame', ColumnType.Video)])
     kernel_path = script_dir + '/obj_detect_kernel.py'
     db.register_python_kernel('ObjDetect', DeviceType.CPU, kernel_path)
 
     frame = db.ops.FrameInput()
-    out_frame = db.ops.ObjDetect(frame = frame)
-    output_op = db.ops.Output(columns=[out_frame])
+    objdet_frame = db.ops.ObjDetect(frame = frame)
+    output_op = db.ops.Output(columns=[objdet_frame])
 
     job = Job(op_args={
         frame: db.table('example').column('frame'),
         output_op: 'example_obj_detect'
     })
     bulk_job = BulkJob(output=output_op, jobs=[job])
-    [out_table] = db.run(bulk_job, force=True, pipeline_instances_per_node=1)
-    out_table.column('out_frame').save_mp4(movie_name + '_obj_detect')
+    db.run(bulk_job, force=True, pipeline_instances_per_node=1)
+
+    compressed_frame = objdet_frame.compress_video(quality = 35)
+    output_op = db.ops.Output(columns=[compressed_frame])
+    job = Job(
+        op_args={
+            frame: db.table('example_obj_detect').column('frame'),
+            output_op: 'out_frame',
+        }
+    )
+    bulk_job = BulkJob(output=output_op, jobs=[job])
+    [out_table] = db.run(bulk_job, force=True)
+
+    out_table.column('frame').save_mp4(movie_name + '_obj_detect')
 
     print('Successfully generated {:s}_obj_detect.mp4'.format(movie_name))
