@@ -235,21 +235,26 @@ class MasterServerImpl final : public proto::Master::Service {
     i64 next_job = 0;
     // Total number of jobs
     i64 num_jobs = -1;
-    // Next sample index in the current task
+    // Next task index in the current job
     i64 next_task = 0;
-    // Total samples in the current task
+    // The number of tasks in the current job
     i64 num_tasks = -1;
     // All job task output rows
     // Job -> Task -> task output rows
     std::vector<std::vector<std::vector<i64>>> job_tasks;
     // Outstanding set of generated task samples that should be processed
-    std::deque<std::tuple<i64, i64>> unallocated_job_tasks;
-    // The total number of tasks that have been completed
-    std::atomic<i64> total_tasks_used{0};
-    // The total number of tasks for this bulk job
-    i64 total_tasks = 0;
-    // The total number of tasks that have been completed for each job
-    std::vector<i64> tasks_used_per_job;
+    std::deque<std::tuple<i64, i64, i64>> unallocated_job_tasks_ops;
+    // The total number of ops that have been completed
+    // Note that ops here are double-counted if they are counted in multiple tasks
+    std::atomic<i64> total_ops_used{0};
+    // The total number of ops for this bulk job
+    // Note that ops here are double-counted if they are counted in multiple tasks
+    i64 total_ops = 0;
+    // The total number of ops that have been completed for each job
+    // Note that ops here are double-counted if they are counted in multiple tasks
+    std::vector<i64> total_ops_used_per_job;
+    // (Job, Task) -> (Op -> TaskStream)
+    std::map<std::tuple<i64, i64>, std::deque<TaskStream>> job_tasks_streams;
 
     Result task_result;
 
@@ -258,14 +263,14 @@ class MasterServerImpl final : public proto::Master::Service {
     //============================================================================
     // Tracks tasks assigned to worker so they can be reassigned if the worker
     // fails
-    // Worker id -> (job_id, task_id)
-    std::map<i64, std::set<std::tuple<i64, i64>>> active_job_tasks;
+    // Worker id -> (job_id, task_id, op_id)
+    std::map<i64, std::set<std::tuple<i64, i64, i64>>> active_job_tasks_ops;
     // (Worker id, job_id, task_id) -> start_time
-    std::map<std::tuple<i64, i64, i64>, double> active_job_tasks_starts;
+    std::map<std::tuple<i64, i64, i64, i64>, double> active_job_tasks_ops_starts;
     // Tracks number of times a task has been failed so that a job can be
-    // removed if it is causing consistent failures job_id -> task_id ->
+    // removed if it is causing consistent failures job_id -> task_id -> op_id
     // num_failures
-    std::map<i64, std::map<i64, i64>> job_tasks_num_failures;
+    std::map<i64, std::map<i64, i64, i64>> job_tasks_num_failures;
     // Tracks the jobs that have failed too many times and should be ignored
     std::set<i64> blacklisted_jobs;
 
