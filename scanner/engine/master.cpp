@@ -940,7 +940,7 @@ void MasterServerImpl::NextWorkHandler(
       return;
     }
 
-    // Grab the next task sample
+    // Grab the next work
     std::tuple<i64, i64, i64> job_task_op_id;
     while (true) {
       job_task_op_id = state->unallocated_job_tasks_ops.back();
