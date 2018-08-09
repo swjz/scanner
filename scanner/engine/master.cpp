@@ -863,71 +863,58 @@ void MasterServerImpl::NextWorkHandler(
                                job_params_.ops().end());
 
     // If we do not have any outstanding work, try and create more
-    if (state->unallocated_job_tasks_ops.empty()) {
+    if (state->unallocated_job_tasks.empty()) {
       // If we have no more samples for this task, try and get another task
 
       // This if-condition means that all tasks in this job are finished
-      if (state->next_task == state->num_tasks) {
+      if (state->next_bulk_task == state->num_bulk_tasks) {
         // Check if there are any unfinished jobs left
         if (state->next_job < state->num_jobs && state->task_result.success()) {
-          state->next_task = 0;
-          // Set num_tasks to how many tasks are there in the next job
-          state->num_tasks = state->job_tasks.at(state->next_job).size();
+          state->next_bulk_task = 0;
+          // Set num_bulk_tasks to how many bulk tasks are there in the next job
+          state->num_bulk_tasks = state->job_bulk_tasks.at(state->next_job).size();
           state->next_job++;
-          VLOG(1) << "Ops left: "
-                  << state->total_ops - state->total_ops_used;
+          VLOG(1) << "Bulk Tasks left: "
+                  << state->total_bulk_tasks - state->total_bulk_tasks_used;
         }
       }
 
       // Create more work if possible
       // This if-condition means that this job is not finished yet (more tasks to go!)
-      if (state->next_task < state->num_tasks) {
+      if (state->next_bulk_task < state->num_bulk_tasks) {
         // Create a new task
         i64 current_job = state->next_job - 1;
-        i64 current_task = state->next_task;
-        const auto& task_output_rows = state->job_tasks.at(current_job).at(current_task);
-        std::deque<TaskStream>& task_streams =
-            state->job_tasks_streams[std::make_tuple(current_job, current_task)];
+        i64 current_bulk_task = state->next_bulk_task;
+        const auto& bulk_task_output_rows = state->job_bulk_tasks.at(current_job).at(current_bulk_task);
+
+
+        // NOTE(swjz): Set it to a fixed number for now.
+        for (i64 i=0; i<ops.size(); i++) {
+          state->task_size_per_op[i] = bulk_task_output_rows;
+        }
+
+        std::map<i64, TaskStream>& task_streams = state->job_tasks_streams[std::make_tuple(current_job, current_bulk_task)];
 
         // Perform analysis on load work entry to determine upstream
         // requirements and when to discard elements.
         derive_stencil_requirements(
             meta_, *table_metas_, jobs.at(new_work->job_index()), ops,
             state->dag_info, job_params_.boundary_condition(),
-            state->job_to_table_id.at(current_job), current_job, current_task,
-            task_output_rows, stenciled_entry, task_streams);
+            state->job_to_table_id.at(current_job), current_job, current_bulk_task,
+            bulk_task_output_rows, stenciled_entry, state->task_size_per_op,
+            task_streams);
 
-        // Make a copy of task_streams so we can remove stuff from it
-        std::deque<TaskStream> task_streams_copy = task_streams;
-        // For each Op in the task_streams
-        while(!task_streams_copy.empty()) {
-          TaskStream task_stream = task_streams_copy.front();
-          task_streams_copy.pop_front();
-          i64 op_idx = task_stream.op_idx;
-          if (state->job_params.ops(op_idx).is_source()) {
-            // TODO(swjz): This is the source Op.
-            // Ignore source Ops if the op_idx != 0 because we have remapped inputs
-            if (task_stream.op_idx == 0) {
-              // Should tell worker to load work from storage and decode the video
-            } else {
-              // The Op is ignored, but still counts to total_ops_used
-              state->total_ops_used++;
-            }
-          } else if (state->job_params.ops(op_idx).is_sink()) {
-            // TODO(swjz): This is the sink Op.
-            // Should tell the worker to encode the video and save work to storage
-          } else {
-            // TODO(swjz): This is a regular Op.
-            // Assume that the input data is already in the
-          }
-          state->unallocated_job_tasks_ops.push_front(
-              std::make_tuple(current_job, current_task, op_idx));
+        for (auto& kv : task_streams) {
+          i64 task_id = kv.first;
+          TaskStream task_stream = kv.second;
+          state->unallocated_job_tasks.push_front(
+              std::make_tuple(current_job, current_bulk_task, task_id));
         }
-        state->next_task++;
+        state->next_bulk_task++;
       }
     }
 
-    if (state->unallocated_job_tasks_ops.empty()) {
+    if (state->unallocated_job_tasks.empty()) {
       if (finished_) {
         // No more work
         new_work->set_no_more_work(true);
@@ -941,33 +928,36 @@ void MasterServerImpl::NextWorkHandler(
     }
 
     // Grab the next work
-    std::tuple<i64, i64, i64> job_task_op_id;
+    // For each work in unallocated_job_tasks, get the first READY one.
+    std::tuple<i64, i64, i64> job_task_id;
     while (true) {
-      job_task_op_id = state->unallocated_job_tasks_ops.back();
-      std::deque<TaskStream> task_streams = state->job_tasks_streams[std::make_tuple(std::get<0>(job_task_op_id),
-                                                                                     std::get<1>(job_task_op_id))];
-      TaskStream task_stream = task_streams.at(std::get<2>(job_task_op_id));
+      job_task_id = state->unallocated_job_tasks.back();
+      std::map<i64, TaskStream> task_streams = state->job_tasks_streams[std::make_tuple(std::get<0>(job_task_id),
+                                                                                     std::get<1>(job_task_id))];
+      TaskStream task_stream = task_streams.at(std::get<2>(job_task_id));
       // Only continue if the task is ready
       if (task_stream.status == TaskStream::READY) {
         // NOTE(swjz): Assert all of its dependencies are pre-computed
-        for (i64 parent_op_id : task_stream.dependencies) {
-          assert(task_streams.at(parent_op_id).status == TaskStream::DONE);
+        for (i64 parent_task_id : task_stream.source_tasks) {
+          assert(task_streams.at(parent_task_id).status == TaskStream::DONE);
         }
+        // The task is going to be assigned to a worker.
+        task_stream.status == TaskStream::ASSIGNED;
         break;
       } else {
         // This one is not ready yet! Move it to the end of queue and try another one
-        state->unallocated_job_tasks_ops.pop_back();
-        state->unallocated_job_tasks_ops.push_front(job_task_op_id);
-        job_task_op_id = state->unallocated_job_tasks_ops.back();
+        state->unallocated_job_tasks.pop_back();
+        state->unallocated_job_tasks.push_front(job_task_id);
+        job_task_id = state->unallocated_job_tasks.back();
       }
     }
 
-    assert(state->next_task <= state->num_tasks);
+    assert(state->next_bulk_task <= state->num_bulk_tasks);
 
     i64 job_idx;
+    i64 bulk_task_idx;
     i64 task_idx;
-    i64 op_idx;
-    std::tie(job_idx, task_idx, op_idx) = job_task_op_id;
+    std::tie(job_idx, bulk_task_idx, task_idx) = job_task_id;
 
     // If the job was blacklisted, then we throw it away
     if (state->blacklisted_jobs.count(job_idx) > 0) {
@@ -983,9 +973,9 @@ void MasterServerImpl::NextWorkHandler(
       new_work->set_table_id(state->job_to_table_id.at(job_idx));
     }
     new_work->set_job_index(job_idx);
+    new_work->set_bulk_task_index(bulk_task_idx);
     new_work->set_task_index(task_idx);
-    new_work->set_op_index(op_idx);
-    const auto& task_rows = state->job_tasks.at(job_idx).at(task_idx);
+    const auto& task_rows = state->job_bulk_tasks.at(job_idx).at(bulk_task_idx);
     for (i64 r : task_rows) {
       new_work->add_output_rows(r);
     }
@@ -994,9 +984,9 @@ void MasterServerImpl::NextWorkHandler(
                           now().time_since_epoch())
                           .count();
     // Track sample assigned to worker
-    state->active_job_tasks_ops[node_info->node_id()].insert(job_task_op_id);
-    state->active_job_tasks_ops_starts[std::make_tuple(
-        (i64)node_info->node_id(), job_idx, task_idx, op_idx)] = task_start;
+    state->active_job_tasks[node_info->node_id()].insert(job_task_id);
+    state->active_job_tasks_starts[std::make_tuple(
+        (i64)node_info->node_id(), job_idx, bulk_task_idx, task_idx)] = task_start;
     state->worker_histories[node_info->node_id()].tasks_assigned += 1;
 
     REQUEST_RPC(NextWork, proto::NextWorkRequest, proto::NextWorkReply);
@@ -1017,8 +1007,8 @@ void MasterServerImpl::FinishedWorkHandler(
     i32 bulk_job_id = params->bulk_job_id();
 
     i64 job_id = params->job_id();
+    i64 bulk_task_id = params->bulk_task_id();
     i64 task_id = params->task_id();
-    i64 op_id = params->op_id();
     i64 num_rows = params->num_rows();
 
     if (!workers_.at(worker_id)->active) {
@@ -1043,38 +1033,59 @@ void MasterServerImpl::FinishedWorkHandler(
 
     auto& state = bulk_jobs_state_.at(bulk_job_id);
 
-    auto& worker_tasks_ops = state->active_job_tasks_ops.at(worker_id);
+    auto& worker_tasks = state->active_job_tasks.at(worker_id);
 
     // Mark the status of this Op as DONE
-    std::deque<TaskStream>& task_streams = state->job_tasks_streams.at(std::make_tuple(job_id, task_id));
-    TaskStream& task_stream = task_streams.at(op_id);
+    std::map<i64, TaskStream>& task_streams = state->job_tasks_streams.at(std::make_tuple(job_id, bulk_task_id));
+    TaskStream& task_stream = task_streams.at(task_id);
     task_stream.status = TaskStream::DONE;
 
-    // Mark this Op's dependents as READY if their reference count turns to 0
-    for (i64 dependent_op_id : task_stream.inverse_dependencies) {
-      if (--task_streams[dependent_op_id].reference_count <= 0) {
-        task_streams[dependent_op_id].status = TaskStream::READY;
+    // Mark this Op's dependents as READY if their launch count turns to 0
+    for (i64 dependent_task_id : task_stream.waiting_tasks) {
+      task_streams[dependent_task_id].launch_count--;
+      if (task_streams[dependent_task_id].launch_count == 0) {
+        task_streams[dependent_task_id].status = TaskStream::READY;
+      } else if (task_streams[dependent_task_id].launch_count < 0) {
+        LOG(FATAL) << "Launch Count of " << dependent_task_id << " < 0!";
+      }
+    }
+    // Remove this Op's dependencies if their free count turns to 0
+    for (i64 dependency_task_id : task_stream.source_tasks) {
+      task_streams[dependency_task_id].free_count--;
+      if (task_streams[dependency_task_id].free_count == 0) {
+        task_streams.erase(dependency_task_id);
+      } else if (task_streams[dependency_task_id].free_count < 0) {
+        LOG(FATAL) << "Free Count of " << dependency_task_id << " < 0!";
       }
     }
 
-    std::tuple<i64, i64, i64> job_tasks_ops = std::make_tuple(job_id, task_id, op_id);
-    assert(worker_tasks_ops.count(job_tasks_ops) > 0);
-    worker_tasks_ops.erase(job_tasks_ops);
+    std::tuple<i64, i64, i64> job_tasks_ops = std::make_tuple(job_id, bulk_task_id, task_id);
+    assert(worker_tasks.count(job_tasks_ops) > 0);
+    worker_tasks.erase(job_tasks_ops);
     state->active_job_tasks_ops_starts.erase(
-        std::make_tuple((i64)worker_id, job_id, task_id, op_id));
+        std::make_tuple((i64)worker_id, job_id, bulk_task_id, task_id));
 
     state->worker_histories[worker_id].tasks_retired += 1;
 
     i64 active_job = state->next_job - 1;
 
+    // Iterate all tasks in the bulk task to find whether the bulk task is finished.
+    bool bulk_task_done = true;
+    for (auto& kv : task_streams) {
+      if (kv.second.status != TaskStream::DONE) {
+        bulk_task_done = false;
+        break;
+      }
+    }
+
     // If job was blacklisted, then we have already updated total tasks
     // used to reflect that and we should ignore it
-    if (state->blacklisted_jobs.count(job_id) == 0) {
-      state->total_ops_used++;
-      state->total_ops_used_per_job[job_id]++;
+    if (bulk_task_done && state->blacklisted_jobs.count(job_id) == 0) {
+      VLOG(1) << "One bulk task finished!";
+      state->total_bulk_tasks_used++;
+      state->bulk_tasks_used_per_job[job_id]++;
 
-      if (state->total_ops_used_per_job[job_id] ==
-          state->job_tasks[job_id].size() * state->job_params.ops_size()) {
+      if (state->bulk_tasks_used_per_job[job_id] == state->job_bulk_tasks[job_id].size()) {
         if (state->dag_info.is_table_output) {
           i32 tid = state->job_uncommitted_tables[job_id];
           meta_.commit_table(tid);
@@ -1088,7 +1099,7 @@ void MasterServerImpl::FinishedWorkHandler(
       }
     }
 
-    if (state->total_ops_used == state->total_ops) {
+    if (state->total_bulk_tasks_used == state->total_bulk_tasks) {
       VLOG(1) << "Master FinishedWork triggered finished!";
       assert(state->next_job == state->num_jobs);
       {
@@ -1211,8 +1222,8 @@ void MasterServerImpl::GetJobStatusHandler(
       reply->set_finished(true);
       reply->mutable_result()->CopyFrom(state->job_result);
 
-      reply->set_ops_done(0);
-      reply->set_total_ops(0);
+      reply->set_bulk_tasks_done(0);
+      reply->set_total_bulk_tasks(0);
 
       reply->set_jobs_done(0);
       reply->set_jobs_failed(0);
@@ -1220,8 +1231,8 @@ void MasterServerImpl::GetJobStatusHandler(
     } else {
       reply->set_finished(false);
 
-      reply->set_ops_done(state->total_ops_used);
-      reply->set_total_ops(state->total_ops);
+      reply->set_bulk_tasks_done(state->total_bulk_tasks_used);
+      reply->set_total_bulk_tasks(state->total_bulk_tasks);
 
       reply->set_jobs_done(state->next_job - 1);
       reply->set_jobs_failed(0);
@@ -1472,7 +1483,7 @@ bool MasterServerImpl::process_job(const proto::BulkJobParameters* job_params,
   new_job_call_->Respond(grpc::Status::OK);
 
   auto finished_fn = [this, state, job_result]() {
-    state->total_ops_used = 0;
+    state->total_bulk_tasks_used = 0;
     state->job_result.CopyFrom(*job_result);
     {
       std::unique_lock<std::mutex> lock(finished_mutex_);
@@ -1634,7 +1645,7 @@ bool MasterServerImpl::process_job(const proto::BulkJobParameters* job_params,
   // Job -> task -> rows
   i32 total_tasks_temp = 0;
   for (size_t i = 0; i < jobs.size(); ++i) {
-    state->total_ops_used_per_job.push_back(0);
+    state->bulk_tasks_used_per_job.push_back(0);
 
     auto& slice_input_rows = state->slice_input_rows_per_job[i];
     i64 total_output_rows = state->total_output_rows_per_job[i];
@@ -1665,8 +1676,8 @@ bool MasterServerImpl::process_job(const proto::BulkJobParameters* job_params,
       }
     }
     assert(partition_boundaries.back() == total_output_rows);
-    state->job_tasks.emplace_back();
-    auto& tasks = state->job_tasks.back();
+    state->job_bulk_tasks.emplace_back();
+    auto& tasks = state->job_bulk_tasks.back();
     for (i64 pi = 0; pi < partition_boundaries.size() - 1; ++pi) {
       tasks.emplace_back();
       auto& task_rows = tasks.back();
@@ -1679,7 +1690,7 @@ bool MasterServerImpl::process_job(const proto::BulkJobParameters* job_params,
       total_tasks_temp++;
     }
   }
-  state->total_ops = total_tasks_temp * ops.size();
+  state->total_bulk_tasks = total_tasks_temp;
 
   if (!job_result->success()) {
     // No database changes made at this point, so just return
@@ -1741,7 +1752,7 @@ bool MasterServerImpl::process_job(const proto::BulkJobParameters* job_params,
 
       i64 total_rows = 0;
       std::vector<i64> end_rows;
-      auto& tasks = state->job_tasks.at(job_idx);
+      auto& tasks = state->job_bulk_tasks.at(job_idx);
       for (i64 task_id = 0; task_id < tasks.size(); ++task_id) {
         i64 task_rows = tasks.at(task_id).size();
         total_rows += task_rows;
@@ -1781,8 +1792,8 @@ bool MasterServerImpl::process_job(const proto::BulkJobParameters* job_params,
 
   // Setup initial task sampler
   state->task_result.set_success(true);
-  state->next_task = 0;
-  state->num_tasks = 0;
+  state->next_bulk_task = 0;
+  state->num_bulk_tasks = 0;
   state->next_job = 0;
   state->num_jobs = jobs.size();
 
@@ -1891,17 +1902,18 @@ bool MasterServerImpl::process_job(const proto::BulkJobParameters* job_params,
       auto current_time = std::chrono::duration_cast<std::chrono::seconds>(
                               now().time_since_epoch())
                               .count();
-      auto& jts = state->active_job_tasks_ops_starts;
+      auto& jts = state->active_job_tasks_starts;
       for (const auto& kv : jts) {
         if (current_time - kv.second > state->job_params.task_timeout()) {
           i64 worker_id;
           i64 job_id;
+          i64 bulk_task_id;
           i64 task_id;
-          std::tie(worker_id, job_id, task_id) = kv.first;
+          std::tie(worker_id, job_id, bulk_task_id, task_id) = kv.first;
           // Task has timed out, stop the worker
           LOG(WARNING) << "Node " << worker_id << " ("
                        << workers_.at(worker_id)->address << ") "
-                       << "failed to finish task (" << job_id << ", " << task_id
+                       << "failed to finish task (" << job_id << ", " << bulk_task_id
                        << ") after " << state->job_params.task_timeout()
                        << " seconds. Removing that worker as an active worker.";
           remove_worker(worker_id);
@@ -2180,31 +2192,31 @@ void MasterServerImpl::start_job_on_workers(const std::vector<i32>& worker_ids) 
 void MasterServerImpl::stop_job_on_worker(i32 worker_id) {
   // Place workers active tasks back into the unallocated task samples
   auto& state = bulk_jobs_state_.at(active_bulk_job_id_);
-  if (state->active_job_tasks_ops.count(worker_id) > 0) {
+  if (state->active_job_tasks.count(worker_id) > 0) {
     // Place workers active tasks back into the unallocated task samples
     VLOG(1) << "Reassigning worker " << worker_id << "'s "
-            << state->active_job_tasks_ops.at(worker_id).size() << " task samples.";
-    for (const std::tuple<i64, i64, i64>& worker_job_task_op :
-         state->active_job_tasks_ops.at(worker_id)) {
-      state->unallocated_job_tasks_ops.push_back(worker_job_task_op);
-      state->active_job_tasks_ops_starts.erase(
-          std::make_tuple((i64)worker_id, std::get<0>(worker_job_task_op),
-                          std::get<1>(worker_job_task_op), std::get<2>(worker_job_task_op)));
+            << state->active_job_tasks.at(worker_id).size() << " task samples.";
+    for (const std::tuple<i64, i64, i64>& worker_job_task :
+         state->active_job_tasks.at(worker_id)) {
+      state->unallocated_job_tasks.push_back(worker_job_task);
+      state->active_job_tasks_starts.erase(
+          std::make_tuple((i64)worker_id, std::get<0>(worker_job_task),
+                          std::get<1>(worker_job_task), std::get<2>(worker_job_task)));
 
       // The worker failure may be due to a bad task. We track number of times
       // a task has failed to detect a bad task and remove it from this bulk
       // job if it exceeds some threshold.
-      i64 job_id = std::get<0>(worker_job_task_op);
-      i64 task_id = std::get<1>(worker_job_task_op);
-      i64 op_id = std::get<2>(worker_job_task_op);
+      i64 job_id = std::get<0>(worker_job_task);
+      i64 bulk_task_id = std::get<1>(worker_job_task);
+      i64 task_id = std::get<2>(worker_job_task);
 
-      i64 num_failures = ++state->job_tasks_num_failures[job_id][task_id][op_id];
+      i64 num_failures = ++state->job_tasks_num_failures[job_id][std::make_tuple(bulk_task_id, task_id)];
       const i64 TOTAL_FAILURES_BEFORE_REMOVAL = 3;
       if (num_failures >= TOTAL_FAILURES_BEFORE_REMOVAL) {
         blacklist_job(job_id);
       }
     }
-    state->active_job_tasks_ops.erase(worker_id);
+    state->active_job_tasks.erase(worker_id);
   }
 
   state->worker_histories[worker_id].end_time = now();
@@ -2240,15 +2252,15 @@ void MasterServerImpl::blacklist_job(i64 job_id) {
 
   // All tasks in unallocated_job_tasks_ with this job id will be thrown away
   state->blacklisted_jobs.insert(job_id);
-  i64 num_ops_left_in_job =
-      state->job_tasks[job_id].size() * state->job_params.ops_size() - state->total_ops_used_per_job[job_id];
-  // Add number of remaining ops to ops used
-  state->total_ops_used += num_ops_left_in_job;
+  i64 num_tasks_left_in_job =
+      state->job_bulk_tasks[job_id].size() - state->bulk_tasks_used_per_job[job_id];;
+  // Add number of remaining bulk tasks to bulk tasks used
+  state->total_bulk_tasks_used += num_tasks_left_in_job;
 
   VLOG(1) << "Blacklisted job " << job_id;
 
   // Check if blacklisting job finished the bulk job
-  if (state->total_ops_used == state->total_ops) {
+  if (state->total_bulk_tasks_used == state->total_bulk_tasks) {
     VLOG(1) << "Master blacklisting job triggered finished!";
     assert(state->next_job == state->num_jobs);
     {
