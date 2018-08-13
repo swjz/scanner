@@ -236,27 +236,26 @@ class MasterServerImpl final : public proto::Master::Service {
     // Total number of jobs
     i64 num_jobs = -1;
     // Next task index in the current job
-    i64 next_bulk_task = 0;
+    i64 next_task = 0;
     // The number of bulk tasks in the current job
-    i64 num_bulk_tasks = -1;
+    i64 num_tasks = -1;
     // All job task output rows
-    // Job -> Bulk Task -> bulk task output rows
-    std::vector<std::vector<std::vector<i64>>> job_bulk_tasks;
+    // Job -> Task -> task output rows
+    std::vector<std::vector<std::vector<i64>>> job_tasks;
     // Outstanding set of generated task samples that should be processed
     // std::deque<job_id, bulk_task_id, task_id>
     std::deque<std::tuple<i64, i64, i64>> unallocated_job_tasks;
-    // The total number of bulk tasks that have been completed
-    std::atomic<i64> total_bulk_tasks_used{0};
-    // The total number of bulk tasks for this bulk job
-    i64 total_bulk_tasks = 0;
+    // The total number of tasks that have been completed
+    std::atomic<i64> total_tasks_used{0};
+    // The total number of tasks for this job
+    i64 total_tasks = 0;
     // The total number of tasks that have been completed for each job
-    std::vector<i64> bulk_tasks_used_per_job;
+    std::vector<i64> tasks_used_per_job;
 
-    // Job -> Bulk Task -> Task -> TaskStream
-    std::map<std::tuple<i64, i64>, std::map<i64, TaskStream>> job_tasks_streams;
     // Op -> maximum size for each task
     std::map<i64, i64> task_size_per_op;
 
+    std::map<i64, TaskStream> task_streams;
 
     Result task_result;
 

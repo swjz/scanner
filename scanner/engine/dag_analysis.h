@@ -116,9 +116,10 @@ Result derive_stencil_requirements(
     const proto::Job& job, const std::vector<proto::Op>& ops,
     const DAGAnalysisInfo& analysis_results,
     proto::BulkJobParameters::BoundaryCondition boundary_condition,
-    i64 table_id, i64 job_idx, i64 task_idx,
+    i64 table_id, i64 job_idx,
     const std::vector<i64>& output_rows, LoadWorkEntry& output_entry,
-    std::deque<TaskStream>& task_streams);
+    std::map<i64, i64>& task_size_per_op,
+    std::map<i64, TaskStream>& task_streams);
 
 // Result derive_input_rows_from_output_rows(
 //     const std::vector<proto::Job>& jobs,
