@@ -243,8 +243,8 @@ class MasterServerImpl final : public proto::Master::Service {
     // Job -> Task -> task output rows
     std::vector<std::vector<std::vector<i64>>> job_tasks;
     // Outstanding set of generated task samples that should be processed
-    // std::deque<job_id, bulk_task_id, task_id>
-    std::deque<std::tuple<i64, i64, i64>> unallocated_job_tasks;
+    // std::deque<job_id, task_id>
+    std::deque<std::tuple<i64, i64>> unallocated_job_tasks;
     // The total number of tasks that have been completed
     std::atomic<i64> total_tasks_used{0};
     // The total number of tasks for this job
@@ -255,6 +255,7 @@ class MasterServerImpl final : public proto::Master::Service {
     // Op -> maximum size for each task
     std::map<i64, i64> task_size_per_op;
 
+    // Task -> TaskStream
     std::map<i64, TaskStream> task_streams;
 
     Result task_result;
@@ -264,14 +265,14 @@ class MasterServerImpl final : public proto::Master::Service {
     //============================================================================
     // Tracks tasks assigned to worker so they can be reassigned if the worker
     // fails
-    // Worker id -> (job_id, bulk_task_id, task_id)
-    std::map<i64, std::set<std::tuple<i64, i64, i64>>> active_job_tasks;
-    // (Worker id, job_id, bulk_task_id, task_id) -> start_time
-    std::map<std::tuple<i64, i64, i64, i64>, double> active_job_tasks_starts;
+    // Worker id -> (job_id, task_id)
+    std::map<i64, std::set<std::tuple<i64, i64>>> active_job_tasks;
+    // (Worker id, job_id, task_id) -> start_time
+    std::map<std::tuple<i64, i64, i64>, double> active_job_tasks_starts;
     // Tracks number of times a task has been failed so that a job can be
     // removed if it is causing consistent failures job_id -> task_id ->
-    // bulk_task_id -> num_failures
-    std::map<i64, std::map<std::tuple<i64, i64>, i64>> job_tasks_num_failures;
+    // num_failures
+    std::map<i64, std::map<i64, i64>> job_tasks_num_failures;
     // Tracks the jobs that have failed too many times and should be ignored
     std::set<i64> blacklisted_jobs;
 
