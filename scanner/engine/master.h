@@ -225,7 +225,7 @@ class MasterServerImpl final : public proto::Master::Service {
     std::map<i64, i64> job_to_table_id;
     // Slice input rows for each job at each slice op
     std::vector<std::map<i64, i64>> slice_input_rows_per_job;
-    // Output rows for each job
+    // Number of output rows for each job
     std::vector<i64> total_output_rows_per_job;
 
     //============================================================================
@@ -247,16 +247,16 @@ class MasterServerImpl final : public proto::Master::Service {
     std::deque<std::tuple<i64, i64>> unallocated_job_tasks;
     // The total number of tasks that have been completed
     std::atomic<i64> total_tasks_used{0};
-    // The total number of tasks for this job
+    // The total number of tasks for this bulk job
     i64 total_tasks = 0;
     // The total number of tasks that have been completed for each job
     std::vector<i64> tasks_used_per_job;
 
-    // Op -> maximum size for each task
+    // Job Op -> maximum size for each task, shared across jobs
     std::map<i64, i64> task_size_per_op;
 
-    // Task -> TaskStream
-    std::map<i64, TaskStream> task_streams;
+    // Job -> Task -> TaskStream
+    std::vector<std::map<i64, TaskStream>> task_streams;
 
     Result task_result;
 

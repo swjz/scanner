@@ -888,7 +888,7 @@ void MasterServerImpl::NextWorkHandler(
         const auto& task_output_rows = state->job_tasks.at(current_job).at(current_task);
 
         // Grab all READY tasks
-        for (auto& kv : state->task_streams) {
+        for (auto& kv : state->task_streams[current_job]) {
           i64 task_id = kv.first;
           TaskStream& task_stream = kv.second;
 
@@ -896,7 +896,7 @@ void MasterServerImpl::NextWorkHandler(
           if (task_stream.status == TaskStream::READY) {
             // NOTE(swjz): Assert all of its dependencies are pre-computed
             for (i64 parent_task_id : task_stream.source_tasks) {
-              assert(state->task_streams.at(parent_task_id).status == TaskStream::DONE);
+              assert(state->task_streams[current_job].at(parent_task_id).status == TaskStream::DONE);
             }
             // The task is going to be assigned to a worker.
             state->unallocated_job_tasks.push_front(
@@ -922,16 +922,17 @@ void MasterServerImpl::NextWorkHandler(
 
     // Grab the next work
     std::tuple<i64, i64> job_task_id;
+    i64 job_idx;
+    i64 task_idx;
     job_task_id = state->unallocated_job_tasks.back();
+    std::tie(job_idx, task_idx) = job_task_id;
     state->unallocated_job_tasks.pop_back();
-    TaskStream& task_stream = state->task_streams.at(std::get<1>(job_task_id));
+    TaskStream& task_stream = state->task_streams[job_idx][task_idx];
     task_stream.status = TaskStream::ASSIGNED;
 
     assert(state->next_task <= state->num_tasks);
 
-    i64 job_idx;
-    i64 task_idx;
-    std::tie(job_idx, task_idx) = job_task_id;
+
 
     // If the job was blacklisted, then we throw it away
     if (state->blacklisted_jobs.count(job_idx) > 0) {
@@ -948,7 +949,7 @@ void MasterServerImpl::NextWorkHandler(
     }
     new_work->set_job_index(job_idx);
     new_work->set_task_index(task_idx);
-    const auto& task_rows = state->task_streams.at(task_idx).valid_output_rows;
+    const auto& task_rows = state->task_streams[job_idx][task_idx].valid_output_rows;
     for (i64 r : task_rows) {
       new_work->add_output_rows(r);
     }
@@ -1008,24 +1009,24 @@ void MasterServerImpl::FinishedWorkHandler(
     auto& worker_tasks = state->active_job_tasks.at(worker_id);
 
     // Mark the status of this Op as DONE
-    TaskStream& task_stream = state->task_streams.at(task_id);
+    TaskStream& task_stream = state->task_streams[job_id].at(task_id);
     task_stream.status = TaskStream::DONE;
 
     // Mark this Op's dependents as READY if their launch count turns to 0
     for (i64 dependent_task_id : task_stream.waiting_tasks) {
-      state->task_streams[dependent_task_id].launch_count--;
-      if (state->task_streams[dependent_task_id].launch_count == 0) {
-        state->task_streams[dependent_task_id].status = TaskStream::READY;
-      } else if (state->task_streams[dependent_task_id].launch_count < 0) {
+      state->task_streams[job_id][dependent_task_id].launch_count--;
+      if (state->task_streams[job_id][dependent_task_id].launch_count == 0) {
+        state->task_streams[job_id][dependent_task_id].status = TaskStream::READY;
+      } else if (state->task_streams[job_id][dependent_task_id].launch_count < 0) {
         LOG(FATAL) << "Launch Count of " << dependent_task_id << " < 0!";
       }
     }
     // Remove this Op's dependencies if their free count turns to 0
     for (i64 dependency_task_id : task_stream.source_tasks) {
-      state->task_streams[dependency_task_id].free_count--;
-      if (state->task_streams[dependency_task_id].free_count == 0) {
-        state->task_streams.erase(dependency_task_id);
-      } else if (state->task_streams[dependency_task_id].free_count < 0) {
+      state->task_streams[job_id][dependency_task_id].free_count--;
+      if (state->task_streams[job_id][dependency_task_id].free_count == 0) {
+        state->task_streams[job_id].erase(dependency_task_id);
+      } else if (state->task_streams[job_id][dependency_task_id].free_count < 0) {
         LOG(FATAL) << "Free Count of " << dependency_task_id << " < 0!";
       }
     }
@@ -1628,39 +1629,41 @@ bool MasterServerImpl::process_job(const proto::BulkJobParameters* job_params,
   std::vector<std::vector<i32>> column_mapping =
       dag_info.column_mapping;
 
-  // NOTE(swjz): assume that we only have one job for now
-  // NOTE(swjz): Assume the output rows are 0 to total_output_rows_per_job[0]
-  std::vector<i64> output_rows;
-  for (i64 i=0; i<state->total_output_rows_per_job[0]; ++i) {
-    output_rows.push_back(i);
+  // Job -> Rows
+  std::vector<std::vector<i64>> output_rows;
+  output_rows.resize(jobs.size());
+  for (size_t job_idx = 0; job_idx < jobs.size(); ++job_idx) {
+    // NOTE(swjz): Assume the output rows are 0 to total_output_rows_per_job[job_id]
+    for (size_t j = 0; j < state->total_output_rows_per_job[job_idx]; ++j) {
+      output_rows[job_idx].push_back(j);
+    }
   }
 
   // NOTE(swjz): Set it to a fixed number for now.
   for (i64 i=0; i<ops.size(); i++) {
-    state->task_size_per_op[i] = output_rows.size();
+    state->task_size_per_op[i] = output_rows[0].size();
   }
 
-  // NOTE(swjz): assume that we only have one job for now
+  state->task_streams.resize(jobs.size());
+  for (size_t job_idx = 0; job_idx < jobs.size(); ++job_idx) {
+    LoadWorkEntry dummy_stenciled_entry;
+    derive_stencil_requirements(
+        meta_, *table_metas_, jobs.at(job_idx), ops,
+        state->dag_info, job_params_.boundary_condition(), job_idx,
+        output_rows[job_idx], dummy_stenciled_entry, state->task_size_per_op,
+        state->task_streams[job_idx]);
+    state->total_tasks += state->task_streams[job_idx].size();
 
-  LoadWorkEntry stenciled_entry;
-  derive_stencil_requirements(
-      meta_, *table_metas_, jobs.at(0), ops,
-      state->dag_info, job_params_.boundary_condition(), 0,
-      output_rows, stenciled_entry, state->task_size_per_op,
-      state->task_streams);
-  state->total_tasks = state->task_streams.size();
-
-  for (size_t i = 0; i < jobs.size(); ++i) {
     state->tasks_used_per_job.push_back(0);
     state->job_tasks.emplace_back();
     // Task -> task output rows
     std::vector<std::vector<i64>>& task_rows = state->job_tasks.back();
-    for (size_t j = 0; j < state->task_streams.size(); ++j) {
+    for (size_t j = 0; j < state->task_streams[job_idx].size(); ++j) {
       task_rows.emplace_back();
       std::vector<i64>& task_output_rows = task_rows.back();
       task_output_rows.insert(task_output_rows.end(),
-          state->task_streams[j].valid_output_rows.begin(),
-          state->task_streams[j].valid_output_rows.end());
+          state->task_streams[job_idx][j].valid_output_rows.begin(),
+          state->task_streams[job_idx][j].valid_output_rows.end());
     }
   }
 
@@ -1726,7 +1729,6 @@ bool MasterServerImpl::process_job(const proto::BulkJobParameters* job_params,
     // for (i64 tid = 0; tid < num_threads; ++tid) {
     //   threads[tid].join();
     // }
-    stenciled_entry.set_table_id(state->job_to_table_id.at(0));
   }
 
   // Setup initial task sampler
