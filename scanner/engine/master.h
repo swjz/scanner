@@ -252,11 +252,14 @@ class MasterServerImpl final : public proto::Master::Service {
     // The total number of tasks that have been completed for each job
     std::vector<i64> tasks_used_per_job;
 
-    // Job Op -> maximum size for each task, shared across jobs
-    std::map<i64, i64> task_size_per_op;
+    // Job -> Op -> maximum size for each task
+    std::vector<std::map<i64, i64>> task_size_per_op;
 
     // Job -> Task -> TaskStream
     std::vector<std::map<i64, TaskStream>> task_streams;
+
+    // Job -> Rows
+    std::vector<std::vector<i64>> job_output_rows;
 
     Result task_result;
 
