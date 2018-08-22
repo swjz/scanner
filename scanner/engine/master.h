@@ -239,9 +239,9 @@ class MasterServerImpl final : public proto::Master::Service {
     i64 next_task = 0;
     // The number of bulk tasks in the current job
     i64 num_tasks = -1;
-    // All job task output rows
-    // Job -> Task -> task output rows
-    std::vector<std::vector<std::vector<i64>>> job_tasks;
+    // Job -> number of tasks
+    std::vector<i64> tasks_per_job;
+
     // Outstanding set of generated task samples that should be processed
     // std::deque<job_id, task_id>
     std::deque<std::tuple<i64, i64>> unallocated_job_tasks;

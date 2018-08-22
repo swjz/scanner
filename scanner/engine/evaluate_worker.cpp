@@ -887,7 +887,7 @@ void EvaluateWorker::feed(EvalWorkEntry& work_entry) {
               unused_outputs[unused_outputs.size() - 1 - y];
           Elements& column = output_columns[unused_col_idx];
           for (Element& element : column) {
-            delete_element(current_output_handles[unused_col_idx], element);
+//            delete_element(current_output_handles[unused_col_idx], element);
           }
           output_columns.erase(output_columns.begin() + unused_col_idx);
         }
@@ -952,7 +952,7 @@ void EvaluateWorker::feed(EvalWorkEntry& work_entry) {
           for (i64 i = 0; i < num_output_columns; ++i) {
             i32 col_idx = side_output_columns.size() - num_output_columns + i;
             auto& element = side_output_columns[col_idx][row_start];
-            delete_element(side_output_handles[col_idx], element);
+//            delete_element(side_output_handles[col_idx], element);
           }
         }
       }
@@ -982,7 +982,7 @@ void EvaluateWorker::feed(EvalWorkEntry& work_entry) {
               auto& cache_deque = kernel_cache[i];
               assert(cache_deque.size() > 0);
               Element element = cache_deque.front();
-              delete_element(device, element);
+//              delete_element(device, element);
               cache_deque.pop_front();
             }
           } else {
@@ -999,9 +999,9 @@ void EvaluateWorker::feed(EvalWorkEntry& work_entry) {
     for (size_t y = 0; y < dead_columns.size(); ++y) {
       i32 dead_col_idx = dead_columns[dead_columns.size() - 1 - y];
       Elements& column = side_output_columns[dead_col_idx];
-      for (Element& element : column) {
-        delete_element(side_output_handles[dead_col_idx], element);
-      }
+//      for (Element& element : column) {
+//        delete_element(side_output_handles[dead_col_idx], element);
+//      }
       side_output_columns.erase(side_output_columns.begin() + dead_col_idx);
       side_output_handles.erase(side_output_handles.begin() + dead_col_idx);
       side_row_ids.erase(side_row_ids.begin() + dead_col_idx);
@@ -1090,7 +1090,7 @@ void EvaluateWorker::clear_stencil_cache() {
       while (!cache_deque.empty()) {
         assert(!kernel_cache_devices.empty());
         Element element = cache_deque.back();
-        delete_element(kernel_cache_devices[i], element);
+//        delete_element(kernel_cache_devices[i], element);
         cache_deque.pop_back();
       }
     }
@@ -1154,7 +1154,7 @@ void PostEvaluateWorker::feed(EvalWorkEntry& entry) {
       buffered_entry_.last_in_task = work_entry.last_in_task;
       buffered_entry_.columns.resize(column_mapping_.size());
       buffered_entry_.row_ids.resize(column_mapping_.size());
-      assert(work_entry.column_handles.size() == columns_.size());
+//      assert(work_entry.column_handles.size() == columns_.size());
       buffered_entry_.column_types.clear();
       buffered_entry_.column_handles.clear();
       buffered_entry_.frame_sizes.clear();
@@ -1259,7 +1259,7 @@ void PostEvaluateWorker::feed(EvalWorkEntry& entry) {
         continue;
       }
       for (i32 b = 0; b < work_entry.columns[i].size(); ++b) {
-        delete_element(work_entry.column_handles[i], work_entry.columns[i][b]);
+//        delete_element(work_entry.column_handles[i], work_entry.columns[i][b]);
       }
     }
   }
