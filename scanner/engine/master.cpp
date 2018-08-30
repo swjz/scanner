@@ -884,7 +884,6 @@ void MasterServerImpl::NextWorkHandler(
       if (state->next_task < state->num_tasks) {
         // Create a new task
         i64 current_job = state->next_job - 1;
-        i64 current_task = state->next_task;
 
         // Grab all READY tasks
         for (auto& kv : state->task_streams[current_job]) {
@@ -900,9 +899,9 @@ void MasterServerImpl::NextWorkHandler(
             // The task is going to be assigned to a worker.
             state->unallocated_job_tasks.push_front(
                 std::make_tuple(current_job, task_id));
+            state->next_task++;
           }
         }
-        state->next_task++;
       }
     }
 
@@ -929,7 +928,7 @@ void MasterServerImpl::NextWorkHandler(
     TaskStream& task_stream = state->task_streams[job_idx][task_idx];
     task_stream.status = TaskStream::ASSIGNED;
 
-    assert(state->next_task <= state->num_tasks);
+    assert(state->next_task <= state->num_tasks && state->next_task >= 0);
 
 
 
@@ -1043,9 +1042,10 @@ void MasterServerImpl::FinishedWorkHandler(
     // If job was blacklisted, then we have already updated total tasks
     // used to reflect that and we should ignore it
     if (state->blacklisted_jobs.count(job_id) == 0) {
-      VLOG(1) << "One bulk task finished!";
       state->total_tasks_used++;
       state->tasks_used_per_job[job_id]++;
+      VLOG(1) << "One task finished! Tasks left: "
+              << state->total_tasks - state->total_tasks_used;
 
       if (state->tasks_used_per_job[job_id] == state->tasks_per_job[job_id]) {
         if (state->dag_info.is_table_output) {
