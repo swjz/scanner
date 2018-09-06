@@ -61,7 +61,9 @@ class Profiler:
                                        ('eval',
                                         worker_profiler_groups['eval']),
                                        ('save',
-                                        worker_profiler_groups['save'])]:
+                                        worker_profiler_groups['save']),
+                                       ('scheduler',
+                                        worker_profiler_groups['scheduler'])]:
                 for i, prof in enumerate(profs):
                     tid = next_tid
                     next_tid += 1
@@ -217,6 +219,12 @@ class Profiler:
         t, offset = read_advance('B', bytes_buffer, offset)
         num_save_workers = t[0]
         for i in range(num_save_workers):
+            prof, offset = self._parse_profiler_output(bytes_buffer, offset)
+            profilers[prof['worker_type']].append(prof)
+        # Scheduler profilers
+        t, offset = read_advance('B', bytes_buffer, offset)
+        num_schedulers = t[0]
+        for i in range(num_schedulers):
             prof, offset = self._parse_profiler_output(bytes_buffer, offset)
             profilers[prof['worker_type']].append(prof)
         return (start_time, end_time), profilers
