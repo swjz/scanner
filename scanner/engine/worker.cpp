@@ -1857,6 +1857,7 @@ bool WorkerImpl::process_job(const proto::BulkJobParameters* job_params,
       VLOG(1) << "Worker " << node_id_ << " in error, stopping.";
       break;
     }
+    auto retire_start = now();
     // We batch up retired tasks to avoid sync overhead
     std::vector<std::tuple<i32, i64, i64>> batched_retired_tasks;
     while (retired_tasks.size() > 0) {
@@ -1893,6 +1894,7 @@ bool WorkerImpl::process_job(const proto::BulkJobParameters* job_params,
         break;
       }
     }
+    scheduler_profiler.add_interval("retire", retire_start, now());
     i64 total_tasks_processed = 0;
     for (i64 t : retired_work_for_queues) {
       total_tasks_processed += t;
@@ -1926,7 +1928,9 @@ bool WorkerImpl::process_job(const proto::BulkJobParameters* job_params,
       if (new_work.wait_for_work()) {
         // Waiting for more work
         VLOG(1) << "Node " << node_id_ << " received wait for work signal.";
+        auto waiting_start = now();
         std::this_thread::sleep_for(std::chrono::seconds(5));
+        scheduler_profiler.add_interval("wait", waiting_start, now());
       }
       else if (new_work.no_more_work()) {
         // No more work left
@@ -1947,6 +1951,7 @@ bool WorkerImpl::process_job(const proto::BulkJobParameters* job_params,
         i32 bulk_job_id = meta.get_bulk_job_id(job_params->job_name());
         LoadWorkEntry stenciled_entry;
 
+        auto dep_analysis_start = now();
         // All we need from this is task_stream_map. Might also use grpc to get from master
         derive_stencil_requirements(
             meta, table_meta, jobs.at(new_work.job_index()), ops,
@@ -1955,6 +1960,7 @@ bool WorkerImpl::process_job(const proto::BulkJobParameters* job_params,
             std::vector<i64>(new_work.output_rows().begin(),
                              new_work.output_rows().end()),
             stenciled_entry, task_size_per_op, task_stream_map);
+        scheduler_profiler.add_interval("deps", dep_analysis_start, now());
 
         stenciled_entry.set_task_index(task_id);
 
@@ -1971,7 +1977,6 @@ bool WorkerImpl::process_job(const proto::BulkJobParameters* job_params,
         }
 
         // load_driver:
-        Profiler dummy_profiler = Profiler(now());
         if (task_stream_map[task_id].op_idx == 0) {
           proto::Result load_worker_result;
           LoadWorkerArgs load_worker_args {
@@ -2000,11 +2005,14 @@ bool WorkerImpl::process_job(const proto::BulkJobParameters* job_params,
               // Per worker arguments
               0, CPU_DEVICE, eval_profilers[0][0],
           };
+
+          auto pre_start = now();
           PreEvaluateWorker pre_evaluate_worker(pre_evaluate_worker_args);
           EvalWorkEntry pre_evaluate_input_entry = load_output_entry;
           pre_evaluate_worker.feed(pre_evaluate_input_entry, pre_evaluate_input_entry.first);
           EvalWorkEntry pre_evaluate_output_entry;
           pre_evaluate_worker.yield(work_packet_size, pre_evaluate_output_entry);
+          scheduler_profiler.add_interval("pre", pre_start, now());
 
           std::string eval_map_file_name = eval_map_path(bulk_job_id, task_id);
           std::unique_ptr<WriteFile> eval_map_output;
@@ -2013,12 +2021,18 @@ bool WorkerImpl::process_job(const proto::BulkJobParameters* job_params,
               "while trying to make write file for " + eval_map_file_name);
 
           proto::EvalWorkEntry pre_output_proto;
+          auto serialize_start = now();
           evalworkentry_to_proto(pre_evaluate_output_entry, pre_output_proto, scheduler_profiler);
+          scheduler_profiler.add_interval("serialize", serialize_start, now());
           size_t serialized_size = pre_output_proto.ByteSizeLong();
 
           std::vector<u8> eval_map_bytes;
+          auto allocate_start = now();
           eval_map_bytes.resize(serialized_size);
+          scheduler_profiler.add_interval("alloc", allocate_start, now());
+          serialize_start = now();
           pre_output_proto.SerializeToArray(eval_map_bytes.data(), serialized_size);
+          scheduler_profiler.add_interval("serialize", serialize_start, now());
 
           auto write_start = now();
           s_write(eval_map_output.get(), eval_map_bytes.data(), serialized_size);
@@ -2049,6 +2063,7 @@ bool WorkerImpl::process_job(const proto::BulkJobParameters* job_params,
           // Op -> Rows
           std::map<i64, std::vector<i64>> op_to_row_ids;
           std::vector<EvalWorkEntry> eval_work_entries;
+          auto grab_source_start = now();
           for (i64 source_task : task_stream.source_tasks) {
             // The file name of eval_map[source_task]
             std::string eval_map_file_name = eval_map_path(bulk_job_id, source_task);
@@ -2108,6 +2123,8 @@ bool WorkerImpl::process_job(const proto::BulkJobParameters* job_params,
             post_evaluate_input_entry.row_ids.push_back(op_to_row_ids.at(kv.first));
           }
 
+          scheduler_profiler.add_interval("grab_source", grab_source_start, now());
+
           // Only keep the last columns because we dropped liveness_analysis
           i32 num_sink_col = final_output_columns.size();
           VLOG(1) << "Output columns: " << num_sink_col;
@@ -2126,6 +2143,7 @@ bool WorkerImpl::process_job(const proto::BulkJobParameters* job_params,
               post_evaluate_input_entry.row_ids.end() - num_sink_col,
               post_evaluate_input_entry.row_ids.end());
 
+          auto post_start = now();
           PostEvaluateWorkerArgs post_evaluate_worker_args {
               // Uniform arguments
               node_id_,
@@ -2140,8 +2158,11 @@ bool WorkerImpl::process_job(const proto::BulkJobParameters* job_params,
           EvalWorkEntry post_evaluate_output_entry;
           post_evaluate_worker.yield(post_evaluate_output_entry);
 
+          scheduler_profiler.add_interval("post", post_start, now());
+
           EvalWorkEntry save_driver_input_entry = post_evaluate_output_entry;
 
+          auto save_start = now();
           // save_driver()
           proto::Result save_worker_result;
           SaveWorkerArgs save_worker_args {
@@ -2162,6 +2183,7 @@ bool WorkerImpl::process_job(const proto::BulkJobParameters* job_params,
                                save_driver_input_entry.table_id, save_driver_input_entry.column_types);
           save_worker.feed(save_driver_input_entry);
           save_worker.finished();
+          scheduler_profiler.add_interval("save", save_start, now());
         }
         // Regular (non-source/sink) Op
         else {
@@ -2184,6 +2206,8 @@ bool WorkerImpl::process_job(const proto::BulkJobParameters* job_params,
           // Op -> Rows
           std::map<i64, std::vector<i64>> op_to_row_ids;
           std::vector<EvalWorkEntry> eval_work_entries;
+
+          auto grab_source_start = now();
           for (i64 source_task : task_stream.source_tasks) {
             // The file name of eval_map[source_task]
             std::string eval_map_file_name = eval_map_path(bulk_job_id, source_task);
@@ -2239,9 +2263,11 @@ bool WorkerImpl::process_job(const proto::BulkJobParameters* job_params,
             evaluate_input_entry.column_handles.push_back(op_to_handle.at(kv.first));
             evaluate_input_entry.row_ids.push_back(op_to_row_ids.at(kv.first));
           }
+          scheduler_profiler.add_interval("grab_source", grab_source_start, now());
           // Now evaluate_input_entry is ready to go!
 
           proto::Result evaluate_worker_result;
+          auto eval_start = now();
           EvaluateWorkerArgs evaluate_worker_args {
               // Uniform arguments
               node_id_, startup_lock, startup_cv, startup_count,
@@ -2261,6 +2287,8 @@ bool WorkerImpl::process_job(const proto::BulkJobParameters* job_params,
           EvalWorkEntry evaluate_output_entry;
           evaluate_worker.yield(work_packet_size, evaluate_output_entry);
 
+          scheduler_profiler.add_interval("eval", eval_start, now());
+
           std::string eval_map_file_name = eval_map_path(bulk_job_id, task_id);
           std::unique_ptr<WriteFile> eval_map_output;
           BACKOFF_FAIL(
@@ -2268,12 +2296,18 @@ bool WorkerImpl::process_job(const proto::BulkJobParameters* job_params,
               "while trying to make write file for " + eval_map_file_name);
 
           proto::EvalWorkEntry evaluate_output_proto;
+          auto serialize_start = now();
           evalworkentry_to_proto(evaluate_output_entry, evaluate_output_proto, scheduler_profiler);
+          scheduler_profiler.add_interval("serialize", serialize_start, now());
           size_t serialized_size = evaluate_output_proto.ByteSizeLong();
 
           std::vector<u8> eval_map_bytes;
+          auto allocate_start = now();
           eval_map_bytes.resize(serialized_size);
+          scheduler_profiler.add_interval("alloc", allocate_start, now());
+          serialize_start = now();
           evaluate_output_proto.SerializeToArray(eval_map_bytes.data(), serialized_size);
+          scheduler_profiler.add_interval("serialize", serialize_start, now());
 
           auto write_start = now();
           s_write(eval_map_output.get(), eval_map_bytes.data(), serialized_size);
