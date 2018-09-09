@@ -999,9 +999,9 @@ void EvaluateWorker::feed(EvalWorkEntry& work_entry) {
     for (size_t y = 0; y < dead_columns.size(); ++y) {
       i32 dead_col_idx = dead_columns[dead_columns.size() - 1 - y];
       Elements& column = side_output_columns[dead_col_idx];
-//      for (Element& element : column) {
-//        delete_element(side_output_handles[dead_col_idx], element);
-//      }
+      for (Element& element : column) {
+        delete_element(side_output_handles[dead_col_idx], element);
+      }
       side_output_columns.erase(side_output_columns.begin() + dead_col_idx);
       side_output_handles.erase(side_output_handles.begin() + dead_col_idx);
       side_row_ids.erase(side_row_ids.begin() + dead_col_idx);
