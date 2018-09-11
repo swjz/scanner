@@ -885,21 +885,46 @@ void MasterServerImpl::NextWorkHandler(
         // Create a new task
         i64 current_job = state->next_job - 1;
 
+        int ready_count = 0;
         // Grab all READY tasks
         for (auto& kv : state->task_streams[current_job]) {
-          i64 task_id = kv.first;
           TaskStream& task_stream = kv.second;
-
-          // Only continue if the task is ready
           if (task_stream.status == TaskStream::READY) {
-            // NOTE(swjz): Assert all of its dependencies are pre-computed
-            for (i64 parent_task_id : task_stream.source_tasks) {
-              assert(state->task_streams[current_job].at(parent_task_id).status == TaskStream::DONE);
+            ready_count++;
+          }
+        }
+
+        if (ready_count < state->task_streams[current_job].size() / 2) {
+          VLOG(1) << "Give task from beginning";
+          for (auto it = state->task_streams[current_job].begin();
+               it != state->task_streams[current_job].end(); ++it) {
+            i64 task_id = it->first;
+            TaskStream& task_stream = it->second;
+
+            // Only continue if the task is ready
+            if (task_stream.status == TaskStream::READY) {
+              // The task is going to be assigned to a worker.
+              state->unallocated_job_tasks.push_front(
+                  std::make_tuple(current_job, task_id));
+              state->next_task++;
+              break;
             }
-            // The task is going to be assigned to a worker.
-            state->unallocated_job_tasks.push_front(
-                std::make_tuple(current_job, task_id));
-            state->next_task++;
+          }
+        } else {
+          VLOG(1) << "Give task from end";
+          for (auto it = state->task_streams[current_job].rbegin();
+               it != state->task_streams[current_job].rend(); ++it) {
+            i64 task_id = it->first;
+            TaskStream& task_stream = it->second;
+
+            // Only continue if the task is ready
+            if (task_stream.status == TaskStream::READY) {
+              // The task is going to be assigned to a worker.
+              state->unallocated_job_tasks.push_front(
+                  std::make_tuple(current_job, task_id));
+              state->next_task++;
+              break;
+            }
           }
         }
       }
